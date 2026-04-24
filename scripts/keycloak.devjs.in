@@ -152,8 +152,8 @@ server {
 }
 
 # --- HTTPS: Keycloak (Admin + realm UIs) — existing Lets Encrypt cert ---
-# If Keycloak redirects to the wrong host/port, set on the Keycloak container e.g. KC_HOSTNAME=keycloak.devjs.in
-# and KC_HOSTNAME_ADMIN=keycloak.devjs.in (see Keycloak “hostname” docs for your image version).
+# Force external scheme https for Keycloak (avoids mixed content when Cloudflare/origin sees HTTP or $scheme is wrong).
+# Keycloak container: KC_PROXY_HEADERS=xforwarded (set in docker-compose.yml) + optional KC_HOSTNAME=https://keycloak.devjs.in
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
@@ -177,9 +177,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header X-Forwarded-Port 443;
 
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
