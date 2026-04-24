@@ -24,7 +24,7 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_DB: keycloak
+      POSTGRES_DB: tl_keycloak_qa
       POSTGRES_USER: keycloak
       POSTGRES_PASSWORD: keycloak
     ports:
@@ -32,7 +32,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d tl_keycloak_qa"]
       interval: 5s
       timeout: 5s
       retries: 15

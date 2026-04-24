@@ -1,27 +1,31 @@
 # /etc/nginx/sites-available/keycloak.devjs.in
 #
-# Three public hostnames under devjs.in (hyphenated labels — no auth.x.y “sub-subdomain”):
-#   https://auth-keycloak.devjs.in/   → 127.0.0.1:4010  (api-gateway: /sdk/v1, /callback, …)
-#   https://api-keycloak.devjs.in/    → 127.0.0.1:4010  (api-gateway: /login, /webhooks, /me, …)
-#   https://tools-keycloak.devjs.in/  → 127.0.0.1:4003 (frontend SPA; use VITE_BASE_PATH=/ or match your build)
+# Hostnames use a single label under devjs.in (not auth.keycloak… — that would be a nested subdomain):
+#   auth-keycloak.devjs.in   → gateway :4010  (SDK, /callback)
+#   api-keycloak.devjs.in    → gateway :4010  (/login, webhooks, /me, …)
+#   tools-keycloak.devjs.in  → frontend :4003 (portal SPA)
+#   keycloak.devjs.in        → Keycloak :8080 (Admin Console https://keycloak.devjs.in/admin/ — uses existing cert)
 #
-# Ports match docker-compose.yml defaults: GATEWAY_HOST_PORT=4010, FRONTEND_HOST_PORT=4003 (override in .env if needed).
+# --- VM checklist (after editing this file for your real domain if not devjs.in) ---
+# 1. DNS: A/AAAA for auth-keycloak, api-keycloak, tools-keycloak, keycloak.devjs.in → this server’s public IP.
+# 2. TLS: certbot (SAN) e.g. certbot certonly --webroot -w /var/www/html \
+#      -d auth-keycloak.devjs.in -d api-keycloak.devjs.in -d tools-keycloak.devjs.in
+#    Point all three ssl_certificate* blocks at the same live/… dir if one cert was issued.
+#    Or use DNS challenge for *.devjs.in wildcard (then set identical ssl paths in each server block).
+# 3. Copy this file to /etc/nginx/sites-available/, symlink sites-enabled, nginx -t, systemctl reload nginx.
+# 4. .env on VM: APP_BASE_PATH=""; FRONTEND_URL=https://tools-keycloak.devjs.in;
+#    AUTH0_REDIRECT_URI=https://auth-keycloak.devjs.in/callback; VITE_* URLs consistent;
+#    Auth0 Actions BACKEND_URL=https://api-keycloak.devjs.in (no trailing slash);
+#    GATEWAY_ALLOWED_HOSTS=auth-keycloak.devjs.in,api-keycloak.devjs.in,tools-keycloak.devjs.in; GATEWAY_TRUST_PROXY=1.
+# 5. docker compose up -d (Keycloak publishes host :8080 per docker-compose.yml).
 #
-# Gateway: use APP_BASE_PATH="" (no /api prefix). Point Auth0 callback to auth host; Actions BACKEND_URL to api host.
-# Optional Host allowlist: GATEWAY_ALLOWED_HOSTS=auth-keycloak.devjs.in,api-keycloak.devjs.in,tools-keycloak.devjs.in
-#   and GATEWAY_TRUST_PROXY=1 so the gateway sees the browser hostname.
-#
-# Keycloak (8080) is not on these three names. Options: (1) SSH / internal only, (2) add a fourth server_name
-#   e.g. keycloak.devjs.in → 127.0.0.1:8080, (3) Cloudflare Tunnel to :8080. Do not mount SPA at KC /admin.
-#
-# TLS: issue one certificate covering all three names (SAN), or separate certs per host; adjust ssl_certificate
-#   paths below to match certbot’s live directory (often the first -d name).
+# Ports match docker-compose.yml: GATEWAY_HOST_PORT=4010, FRONTEND_HOST_PORT=4003, Keycloak 8080:8080.
 
-# --- ACME / HTTP → HTTPS (all three hosts) ---
+# --- ACME / HTTP → HTTPS (all public hostnames) ---
 server {
     listen 80;
     listen [::]:80;
-    server_name auth-keycloak.devjs.in api-keycloak.devjs.in tools-keycloak.devjs.in;
+    server_name auth-keycloak.devjs.in api-keycloak.devjs.in tools-keycloak.devjs.in keycloak.devjs.in;
 
     location /.well-known/acme-challenge/ {
         root /var/www/html;
@@ -142,6 +146,47 @@ server {
 
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
+
+        proxy_read_timeout 300;
+    }
+}
+
+# --- HTTPS: Keycloak (Admin + realm UIs) — existing Lets Encrypt cert ---
+# If Keycloak redirects to the wrong host/port, set on the Keycloak container e.g. KC_HOSTNAME=keycloak.devjs.in
+# and KC_HOSTNAME_ADMIN=keycloak.devjs.in (see Keycloak “hostname” docs for your image version).
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name keycloak.devjs.in;
+
+    ssl_certificate     /etc/letsencrypt/live/keycloak.devjs.in/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/keycloak.devjs.in/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/keycloak.devjs.in/chain.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    client_max_body_size 10M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+        proxy_busy_buffers_size 256k;
 
         proxy_read_timeout 300;
     }
