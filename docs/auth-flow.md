@@ -1,5 +1,7 @@
 # Authentication Flow
 
+For **production hostnames** (auth / api / tools / keycloak), **Cloudflare edge**, **gateway Host allowlist**, and how AuthZ fits the PEP/PDP model, see [architecture.md](./architecture.md).
+
 ## Auth0 (Universal Login)
 
 1. User clicks **Continue with Auth0** on `/login`.
@@ -10,6 +12,39 @@
 6. `frontend/src/main.jsx` loads the gateway-hosted SDK and calls `captureOAuthHash` (no automatic password modal on load; see **Keycloak password enrollment** below).
 7. SPA calls `GET /me/dashboard` with `Authorization: Bearer <access_token>`.
 8. Gateway verifies the JWT (Auth0 or Keycloak — see below), resolves **internal user id** via **authz-service** (`/authz/resolve` or `/authz/identities/ensure`), then calls `GET /authz/dashboard/:userId`.
+
+## Fresh Auth0 tenant & Actions
+
+Use this checklist when creating a **new** Auth0 tenant for this repo.
+
+1. **Tenant & application**
+   - Create an **Application** suitable for your client: **Single Page Application** if the browser uses PKCE / Universal Login from the frontend; use a **confidential** app (Regular Web) if the gateway exchanges the authorization code with `AUTH0_CLIENT_SECRET` on `GET /callback` (current gateway behavior).
+   - Copy **Domain**, **Client ID**, and **Client Secret** into root `.env` / `AUTH0_*` for **api-gateway** and **keycloak-api** (see [`.env.example`](../.env.example)).
+2. **API (audience)**
+   - **Applications → APIs → Create API**. Set the **Identifier** (this is your **`AUTH0_AUDIENCE`**) — use the same value in the gateway, keycloak-api, and `VITE_AUTH0_AUDIENCE` so access tokens are **JWTs** (not opaque).
+3. **URLs**
+   - **Allowed Callback URLs:** `<GATEWAY_ORIGIN>/callback` (include `APP_BASE_PATH` prefix if set, e.g. `https://api.example.com/kc-poc/callback`). Must match **`AUTH0_REDIRECT_URI`** / **`VITE_AUTH0_REDIRECT_URI`**.
+   - **Allowed Web Origins** and **Allowed Origins (CORS):** your SPA origin (e.g. `http://localhost:4003`).
+4. **Grant types (optional)**
+   - Enable **Password** / Resource Owner Password only if you still use **`POST /login`** with Auth0 credentials and your tenant policy allows it.
+5. **Auth0 Actions (webhooks)**
+   - In **Actions → Library**, create **three** custom actions (Node 18), one per trigger: **Pre User Registration**, **Post User Registration**, **Post Login**.
+   - Paste the matching handler from [`keycloak-api/auth0-actions/actions-for-auth0-dashboard.js`](../keycloak-api/auth0-actions/actions-for-auth0-dashboard.js) (one export per Action).
+   - Under each Action **Settings → Secrets** add:
+     - **`BACKEND_URL`** — public **API gateway** origin only (no trailing slash), e.g. `https://api.example.com` or `https://<tunnel>/kc-poc` when `APP_BASE_PATH=/kc-poc`. Auth0 cloud cannot call `http://localhost`; use **ngrok**, **Cloudflare Tunnel**, etc. for local testing.
+     - **`ACTIONS_SECRET`** — same random string as **`AUTH0_ACTIONS_SECRET`** on **keycloak-api** (gateway forwards `Authorization: Bearer …` unchanged).
+   - Add each Action to the correct **Flow** (Pre User Registration / Post User Registration / Login) and **Deploy**.
+6. **Paths called by Actions** (via gateway)
+
+| Trigger | HTTP |
+|--------|------|
+| Pre User Registration | `POST {BACKEND_URL}/webhooks/auth0/pre-user-registration` |
+| Post User Registration | `POST {BACKEND_URL}/webhooks/auth0/post-user-registration` |
+| Post Login | `POST {BACKEND_URL}/webhooks/auth0/post-login` |
+
+The gateway proxies these to **keycloak-api**, which syncs users into Keycloak (create if missing; update if already present — see `userSync.service.js`).
+
+**Smoke test (stack running):** `./scripts/verify-auth0-webhooks.sh`
 
 ## Email / password (`POST /login` on the gateway)
 
@@ -29,7 +64,7 @@ While migrating off Auth0, users may set a Keycloak-local password while still h
 3. **`POST /auth/kc-password`** sets the password via Keycloak Admin API and sets **`kc_password_enrolled=true`** (and clears **`kc_password_deadline`**).
 4. Later sign-ins can use **email/password** and hit the **Keycloak-first** branch without calling Auth0.
 
-The gateway proxies **`/auth/kc-password-status`** and **`/auth/kc-password`** to keycloak-api and rate-limits **`POST /auth/kc-password`**.
+The gateway proxies **`/auth/kc-password-status`**, **`/auth/kc-password`**, and **`/webhooks/auth0/*`** to keycloak-api and rate-limits **`POST /auth/kc-password`**.
 
 ## Signup (`POST /signup`)
 

@@ -1,0 +1,52 @@
+# Local MySQL + Postgres for docker compose. Use with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.local-db.yml up --build
+#
+# Production / Cloud SQL: use only docker-compose.yml and a single root `.env` (see `.env.example`).
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: authz
+      MYSQL_USER: authz
+      MYSQL_PASSWORD: authz
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  keycloak:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  authz-service:
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  postgres_data:

@@ -10,6 +10,10 @@ import {
   tlLog,
   tlError,
 } from "./lib/correlationLog.js";
+import {
+  hostAllowlistMiddleware,
+  parseAllowedHosts,
+} from "./middleware/hostAllowlist.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +23,21 @@ const AUTHZ_BASE_URL = process.env.AUTHZ_BASE_URL || "http://localhost:4001";
 const MOCK_SERVICE_URL = process.env.MOCK_SERVICE_URL || "http://localhost:4002";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:4003";
 const APP_BASE_PATH = (process.env.APP_BASE_PATH || "").replace(/\/$/, "");
+const GATEWAY_ALLOWED_HOSTS = parseAllowedHosts(
+  process.env.GATEWAY_ALLOWED_HOSTS
+);
+
+function configureTrustProxy(app) {
+  const raw = String(process.env.GATEWAY_TRUST_PROXY || "").trim();
+  if (!raw) return;
+  if (raw === "1" || /^true$/i.test(raw)) {
+    app.set("trust proxy", 1);
+    return;
+  }
+  if (/^\d+$/.test(raw)) {
+    app.set("trust proxy", Number(raw));
+  }
+}
 
 async function authzCheckAllowed(userId, action) {
   try {
@@ -139,6 +158,7 @@ const kcPasswordPostLimiter = rateLimit({
 
 function createApp() {
   const app = express();
+  configureTrustProxy(app);
   app.use(corsMiddleware());
   app.use(express.json());
   app.use(correlationMiddleware("api-gateway"));
@@ -148,6 +168,8 @@ function createApp() {
   app.get(`${base}/health`, (_req, res) => {
     res.json({ status: "ok", service: "api-gateway" });
   });
+
+  app.use(hostAllowlistMiddleware(GATEWAY_ALLOWED_HOSTS));
 
   app.use(
     `${base}/sdk/v1`,
@@ -218,6 +240,17 @@ function createApp() {
     `${base}/auth/kc-password`,
     kcPasswordPostLimiter,
     (req, res) => proxyToKeycloakApi(req, res, "/auth/kc-password")
+  );
+
+  // Auth0 Actions → gateway → keycloak-api (Bearer = AUTH0_ACTIONS_SECRET on keycloak-api)
+  app.post(`${base}/webhooks/auth0/pre-user-registration`, (req, res) =>
+    proxyToKeycloakApi(req, res, "/webhooks/auth0/pre-user-registration")
+  );
+  app.post(`${base}/webhooks/auth0/post-user-registration`, (req, res) =>
+    proxyToKeycloakApi(req, res, "/webhooks/auth0/post-user-registration")
+  );
+  app.post(`${base}/webhooks/auth0/post-login`, (req, res) =>
+    proxyToKeycloakApi(req, res, "/webhooks/auth0/post-login")
   );
 
   app.get(`${base}/me`, authenticateJwt, async (req, res) => {
@@ -416,5 +449,10 @@ const app = createApp();
 app.listen(PORT, "0.0.0.0", () => {
   logKeycloakGatewayEnv();
   warnAuth0AudienceIfNeeded();
+  if (GATEWAY_ALLOWED_HOSTS.length) {
+    console.log(
+      `[tl:api-gateway] GATEWAY_ALLOWED_HOSTS (${GATEWAY_ALLOWED_HOSTS.length}): ${GATEWAY_ALLOWED_HOSTS.join(", ")}`
+    );
+  }
   console.log(`api-gateway listening on ${PORT} basePath=${APP_BASE_PATH || "/"}`);
 });

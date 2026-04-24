@@ -1,0 +1,60 @@
+# Deploy to a GCP VM over SSH (e.g. Cloud Build trigger on push).
+#
+# Put all runtime config on the VM in a single repo-root `.env` (Auth0, Cloud SQL,
+# Keycloak JDBC, public URLs). This pipeline only pulls code and runs Docker Compose.
+#
+# Trigger substitutions (set in Cloud Console or gcloud):
+#   _LOGS_BUCKET   — GCS bucket for build logs (must exist)
+#   _VM_HOST       — VM IP or DNS
+#   _VM_USER       — SSH user (e.g. ubuntu)
+#   _SSH_SECRET    — Secret Manager secret id for the VM SSH private key (PEM)
+#   _APP_DIR       — Absolute path to this repo on the VM (e.g. /opt/tl-keycloak)
+#   _GIT_REF       — HEAD or branch/tag to checkout
+#
+# IAM: Cloud Build SA needs roles/secretmanager.secretAccessor on _SSH_SECRET and
+# network path to the VM on TCP 22.
+
+logsBucket: "gs://${_LOGS_BUCKET}"
+
+substitutions:
+  _LOGS_BUCKET: "REPLACE_ME_cloudbuild"
+  _VM_HOST: "REPLACE_ME"
+  _VM_USER: "ubuntu"
+  _SSH_SECRET: "gcp-vm-access-key"
+  _APP_DIR: "/opt/tl-keycloak"
+  _GIT_REF: "HEAD"
+
+options:
+  logging: GCS_ONLY
+
+timeout: 1200s
+
+steps:
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: deploy-via-ssh
+    entrypoint: /bin/bash
+    args:
+      - "-c"
+      - |
+        set -euo pipefail
+        echo "Loading SSH key from Secret Manager (${_SSH_SECRET})..."
+        mkdir -p /root/.ssh
+        gcloud secrets versions access latest --secret="${_SSH_SECRET}" > /root/.ssh/id_rsa
+        chmod 600 /root/.ssh/id_rsa
+
+        echo "Deploying on ${_VM_USER}@${_VM_HOST} in ${_APP_DIR} (ref: ${_GIT_REF})..."
+        ssh -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa \
+          "${_VM_USER}@${_VM_HOST}" \
+          bash -s <<'REMOTE_EOF'
+        set -euo pipefail
+        cd '${_APP_DIR}'
+        git fetch --all --prune
+        if [ '${_GIT_REF}' = 'HEAD' ]; then
+          git pull --ff-only
+        else
+          git checkout '${_GIT_REF}'
+          git pull --ff-only || true
+        fi
+        chmod +x scripts/vm-deploy-compose.sh 2>/dev/null || true
+        ./scripts/vm-deploy-compose.sh
+        REMOTE_EOF

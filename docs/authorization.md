@@ -2,6 +2,15 @@
 
 Authorization is centralized in `authz-service`.
 
+## PDP vs PEP (how this repo uses AuthZ)
+
+- **PDP (Policy Decision Point):** `authz-service` decides **allowed** vs **denied** and returns permission and dashboard data. The **api-gateway** calls it with a server-side user id (for example `POST /authz/check`, `GET /authz/me/:userId`).
+- **PEP (Policy Enforcement Point):** The **api-gateway** enforces **JWT validation** and **application routing**, then either calls AuthZ for a decision or proxies to another service after checks.
+
+In this stack, AuthZ is **not** a transparent HTTP proxy for every backend byte stream. If you add full request proxying through AuthZ later, account for **latency**, **payload size**, and **WebSockets** separately from the current JSON check pattern.
+
+See [architecture.md](./architecture.md#authz-pdp-vs-pep-in-this-repository) for edge and routing context.
+
 ## Schema
 
 - `users`

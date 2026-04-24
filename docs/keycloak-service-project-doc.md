@@ -131,7 +131,7 @@ The sync code uses **`KEYCLOAK_BASE_URL`** and **`KEYCLOAK_REALM`** (see `keyclo
 | Variable | Description |
 |----------|-------------|
 | `AUTH0_ACTIONS_SECRET` | Must match the Action secret (e.g. `ACTIONS_SECRET`) — sent as `Authorization: Bearer …`. If unset, webhooks return **503**. |
-| `BACKEND_PUBLIC_URL` | Documented in `.env.example` as the public base URL Auth0 can reach (ngrok/cloud); align with Action secret `BACKEND_URL`. |
+| `BACKEND_PUBLIC_URL` | Optional doc/ops URL for “public API” (e.g. keycloak-api behind a load balancer). **Auth0 Action secret `BACKEND_URL` should be the api-gateway origin** so webhooks hit `POST /webhooks/auth0/*` on the gateway (see [auth-flow.md](./auth-flow.md#fresh-auth0-tenant--actions)). |
 
 ---
 
@@ -239,7 +239,7 @@ Returns `{ "status": "ok" }`. Used for load balancers and Compose healthchecks.
 
 **Response:** `{ "ok": true, "message": "keycloak_password_set" }` on success.
 
-**Note:** In production, expose these routes via **api-gateway** (same paths under the gateway origin) and apply **rate limiting** on `POST /auth/kc-password`.
+**Note:** The **api-gateway** already proxies **`/auth/kc-password-status`**, **`/auth/kc-password`**, and **`/webhooks/auth0/*`** to keycloak-api (same paths). Apply **rate limiting** on `POST /auth/kc-password` at the edge if needed.
 
 ### Canonical user id (authz-service)
 
@@ -247,7 +247,7 @@ After a successful **Auth0** login, **keycloak-api** calls **authz-service** `PO
 
 ### Webhooks (all require `Authorization: Bearer <AUTH0_ACTIONS_SECRET>`)
 
-Mounted under `/webhooks/auth0` (see `routes/auth0Webhooks.js`).
+Mounted under `/webhooks/auth0` in **keycloak-api** (see `keycloak-api/src/routes/webhooks.js`). **api-gateway** exposes the same paths and forwards to keycloak-api.
 
 | Method | Path | Behavior |
 |--------|------|----------|
@@ -275,11 +275,11 @@ Static files are served from `functions/public/`. Server listens with **HTTPS** 
 1. **Application:** Create a Regular Web / SPA / Native app as appropriate; obtain **Client ID** and **Client Secret**.
 2. **Grant types:** Enable **Password** (Resource Owner Password) if you use `/login` and signup’s internal login — subject to Auth0 product/tenant rules.
 3. **Database connection:** Ensure `AUTH0_CONNECTION` matches the connection name in the dashboard.
-4. **Actions:** Use `functions/auth0-actions/actions-for-auth0-dashboard.js`. For each Action:
-   - Add secrets **`BACKEND_URL`** (public API base, no trailing slash) and **`ACTIONS_SECRET`** (same string as `AUTH0_ACTIONS_SECRET` on the server).
+4. **Actions:** Use `keycloak-api/auth0-actions/actions-for-auth0-dashboard.js`. For each Action:
+   - Add secrets **`BACKEND_URL`** (public **api-gateway** origin, no trailing slash) and **`ACTIONS_SECRET`** (same string as `AUTH0_ACTIONS_SECRET` on **keycloak-api**).
    - Deploy the Action on the correct flow (Pre User Registration, Post User Registration, Post Login).
 
-**Local webhooks:** Auth0 cloud cannot call `http://localhost`; use a tunnel (ngrok, Cloudflare Tunnel, etc.) and set `BACKEND_URL` / `BACKEND_PUBLIC_URL` accordingly.
+**Local webhooks:** Auth0 cloud cannot call `http://localhost`; use a tunnel (ngrok, Cloudflare Tunnel, etc.) and set **`BACKEND_URL`** to the tunnel URL that reaches **api-gateway** (not keycloak-api directly, unless you intentionally bypass the gateway).
 
 ---
 

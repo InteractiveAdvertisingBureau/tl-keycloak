@@ -7,13 +7,13 @@ Monorepo POC: **Auth0** login (Universal Login + ROPG), **Keycloak** user sync v
 | Package | Role |
 |---------|------|
 | `auth-sdk` | Builds `auth-sdk.js` (IIFE); copied to `api-gateway/public/sdk/v1/`. |
-| `api-gateway` | Static SDK, `/callback`, proxies `/login` `/signup` to keycloak-api, `/me/dashboard`, admin checks, `/admin/*` `/user/*` → mock. |
+| `api-gateway` | Static SDK, `/callback`, proxies `/login` `/signup` and **`/webhooks/auth0/*`** to keycloak-api, `/me/dashboard`, admin checks, `/admin/*` `/user/*` → mock. |
 | `keycloak-api` | Auth0 signup/login, Keycloak Admin sync, Auth0 Action webhooks. |
 | `authz-service` | RBAC + `/authz/dashboard`, `/authz/check`. |
 | `mock-service` | Sample downstream API. |
 | `frontend` | Vite/React host that loads the SDK from the gateway. |
 
-Each service has its own **`.env.example`** — copy to **`.env`** for local overrides. Docker Compose injects shared settings via a **root `.env`** (see [`.env.example`](.env.example)).
+Each service may have its own **`.env.example`** for running that package outside Compose. **Docker Compose uses a single root `.env` only** (see [`.env.example`](.env.example)) for Auth0, Cloud SQL / DB URLs, Keycloak, and public URLs.
 
 ## Ports (default)
 
@@ -31,7 +31,8 @@ Each service has its own **`.env.example`** — copy to **`.env`** for local ove
 
 - Docker / Docker Compose
 - **Auth0** application (client ID + secret) with Database Connection; enable **Password** grant if your tenant allows ROPG for testing.
-- Set **`AUTH0_*`** in root `.env` before `docker compose up --build`.
+- **Auth0 API** with an **Identifier** equal to **`AUTH0_AUDIENCE`** (so access tokens are JWTs for the gateway).
+- Set **`AUTH0_*`**, database, and URL variables in the **root `.env`** before `docker compose up --build`.
 
 ## Quick start (Docker)
 
@@ -39,8 +40,11 @@ Each service has its own **`.env.example`** — copy to **`.env`** for local ove
 cp .env.example .env
 # Edit .env with real AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET
 
-docker compose up --build
+# Local MySQL + Postgres containers (default POC)
+docker compose -f docker-compose.yml -f docker-compose.local-db.yml up --build
 ```
+
+**Cloud SQL / GCP VM:** use only `docker-compose.yml`. Maintain **one** root `.env` on the VM (copy from `.env.example`) with `AUTH0_*`, `KC_DB_URL` / `KC_DB_*` for Postgres, `MYSQL_*` for authz, and public URLs. [`cloudbuild.yaml`](cloudbuild.yaml) only SSHs in, runs `git pull`, and `./scripts/vm-deploy-compose.sh` (it does not create or upload env files).
 
 - Gateway: `http://localhost:4010/health`
 - SDK: `http://localhost:4010/sdk/v1/auth-sdk.js`
@@ -52,7 +56,13 @@ Seeded demo users use `auth0|demo-admin-sub` and `auth0|demo-user-sub`. Set **`A
 
 ## Auth0 Actions / webhooks
 
-Point Auth0 Actions at `http://<keycloak-api-host>:4004/webhooks/auth0/...` (use a tunnel for local). Set **`AUTH0_ACTIONS_SECRET`** to match the Action secret. See [docs/keycloak-service-project-doc.md](docs/keycloak-service-project-doc.md).
+Auth0 Actions should call the **API gateway** (not keycloak-api directly) so traffic matches production routing:
+
+- `POST <GATEWAY_BASE>/webhooks/auth0/pre-user-registration`
+- `POST <GATEWAY_BASE>/webhooks/auth0/post-user-registration`
+- `POST <GATEWAY_BASE>/webhooks/auth0/post-login`
+
+Set Action secret **`BACKEND_URL`** to your public gateway origin (no trailing slash; use HTTPS + tunnel for local dev). **`ACTIONS_SECRET`** must equal **`AUTH0_ACTIONS_SECRET`** on **keycloak-api** (gateway forwards the `Authorization` header). Snippets: [keycloak-api/auth0-actions/actions-for-auth0-dashboard.js](keycloak-api/auth0-actions/actions-for-auth0-dashboard.js). Details: [docs/auth-flow.md](docs/auth-flow.md#fresh-auth0-tenant--actions), [docs/keycloak-service-project-doc.md](docs/keycloak-service-project-doc.md).
 
 ## SDK embed guide
 

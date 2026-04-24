@@ -17,8 +17,9 @@ This project is a Node.js/Express service that uses Auth0 as the primary identit
 flowchart LR
     user["End User / Client App"]
     auth0["Auth0\nPrimary Identity Provider"]
-    api["Node.js API\nExpress Service"]
-    webhooks["Auth0 Actions Webhooks"]
+    api["keycloak-api\nExpress"]
+    gateway["api-gateway"]
+    webhooks["Auth0 Actions"]
     keycloak["Keycloak\nSecondary Identity Store"]
     postgres["PostgreSQL\nKeycloak DB"]
     logs["Audit / App Logs"]
@@ -29,7 +30,8 @@ flowchart LR
     auth0 -->|"tokens + profile"| api
     api -->|"sync user"| keycloak
     auth0 -->|"post-login,\npost-user-registration"| webhooks
-    webhooks -->|"POST /webhooks/auth0/*"| api
+    webhooks -->|"POST /webhooks/auth0/*"| gateway
+    gateway -->|proxy| api
     api -->|"Admin REST API"| keycloak
     keycloak --> postgres
     api --> logs
@@ -121,5 +123,15 @@ flowchart TD
 
 - Primary auth path: `Client -> Express API -> Auth0`
 - Sync path: `Express API -> userSync.service -> Keycloak Admin API`
-- Webhook path: `Auth0 Action -> /webhooks/auth0/* -> mapper -> userSync.service -> Keycloak`
+- Webhook path: `Auth0 Action -> api-gateway /webhooks/auth0/* -> keycloak-api -> mapper -> userSync.service -> Keycloak`
 - Persistence path: `Keycloak -> PostgreSQL`
+
+## Keycloak Admin Console (production hardening)
+
+The Keycloak **admin** console and admin REST API are powerful; exposure should not match anonymous **public API** traffic.
+
+- Prefer **Cloudflare Access**, **IP allowlist**, **VPN-only** reachability, or a **separate internal hostname** for administrative use versus end-user login or account UI.
+- If Keycloak is reached via a **fourth public host** (for example `keycloak.example.com` through the gateway), restrict **admin paths** at the edge or network layer so only operators can open them.
+- Rotate **KEYCLOAK_ADMIN** credentials and use **least-privilege** realm/service accounts for automation (`keycloak-api`) instead of sharing the master admin password broadly.
+
+Public edge layout (DNS, TLS, auth vs api host roles) is summarized in [architecture.md](./architecture.md).
