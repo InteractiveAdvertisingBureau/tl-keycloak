@@ -8,3 +8,4 @@ build/
 data/
 coverage/
 .env.local
+oracle.env

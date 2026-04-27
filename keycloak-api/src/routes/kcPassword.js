@@ -38,6 +38,9 @@ async function findKeycloakUserForAuth0Request(req) {
     for (const u of list) {
       if (!sub || userMatchesAuth0Id(u, sub)) return u;
     }
+    // Backward-compatible fallback for users synced/created without auth0_id.
+    // If email lookup returns exactly one user, treat it as the target.
+    if (list.length === 1) return list[0];
   }
   return sub ? await findUserByAuth0Id(sub) : null;
 }
