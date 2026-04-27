@@ -14,6 +14,10 @@ import {
 
 const router = express.Router();
 
+function rid(req) {
+  return req?.correlationId || "no-correlation-id";
+}
+
 /** Access tokens often omit `email`; UserInfo matches sync (userinfo has email). */
 async function resolveEmailForLookup(req) {
   const claims = req.auth0Claims || {};
@@ -22,9 +26,18 @@ async function resolveEmailForLookup(req) {
   if (email || !req.auth0BearerToken) return email;
   try {
     const info = await authProvider.getUserInfo(req.auth0BearerToken);
-    if (info?.email) email = String(info.email).toLowerCase().trim();
+    if (info?.email) {
+      email = String(info.email).toLowerCase().trim();
+      console.log(
+        `[tl:keycloak-api:${rid(req)}] kc_password_email_from_userinfo`,
+        { hasEmail: true }
+      );
+    }
   } catch (e) {
-    console.warn("[tl:keycloak-api] kc-password userinfo email fallback", e.message);
+    console.warn(
+      `[tl:keycloak-api:${rid(req)}] kc_password_userinfo_fallback_failed`,
+      { message: e.message }
+    );
   }
   return email;
 }
@@ -33,16 +46,59 @@ async function findKeycloakUserForAuth0Request(req) {
   const claims = req.auth0Claims || {};
   const sub = claims.sub;
   const email = await resolveEmailForLookup(req);
+  console.log(`[tl:keycloak-api:${rid(req)}] kc_password_lookup_begin`, {
+    hasSub: Boolean(sub),
+    hasEmail: Boolean(email),
+  });
   if (email) {
     const list = await findUsersByEmail(email);
+    console.log(`[tl:keycloak-api:${rid(req)}] kc_password_lookup_by_email`, {
+      matches: list.length,
+    });
     for (const u of list) {
-      if (!sub || userMatchesAuth0Id(u, sub)) return u;
+      if (!sub || userMatchesAuth0Id(u, sub)) {
+        console.log(`[tl:keycloak-api:${rid(req)}] kc_password_lookup_email_hit`, {
+          keycloakUserId: u.id,
+          matchedBy: sub ? "email+auth0_id" : "email",
+        });
+        return u;
+      }
     }
     // Backward-compatible fallback for users synced/created without auth0_id.
-    // If email lookup returns exactly one user, treat it as the target.
-    if (list.length === 1) return list[0];
+    // If email lookup returns exactly one user, treat it as the target and
+    // backfill auth0_id from token sub for future exact lookups.
+    if (list.length === 1) {
+      const only = list[0];
+      if (sub && !userMatchesAuth0Id(only, sub)) {
+        try {
+          const attrs = { ...(only.attributes || {}), auth0_id: [sub] };
+          await updateKeycloakUser(only.id, { ...only, attributes: attrs });
+          console.log(
+            `[tl:keycloak-api:${rid(req)}] kc_password_lookup_backfilled_auth0_id`,
+            { keycloakUserId: only.id }
+          );
+          return { ...only, attributes: attrs };
+        } catch (e) {
+          console.warn(
+            `[tl:keycloak-api:${rid(req)}] kc_password_lookup_backfill_failed`,
+            { message: e?.message }
+          );
+        }
+      }
+      console.log(
+        `[tl:keycloak-api:${rid(req)}] kc_password_lookup_email_single_fallback`,
+        { keycloakUserId: only.id }
+      );
+      return only;
+    }
   }
-  return sub ? await findUserByAuth0Id(sub) : null;
+  if (!sub) return null;
+  const byAuth0Id = await findUserByAuth0Id(sub);
+  console.log(`[tl:keycloak-api:${rid(req)}] kc_password_lookup_by_auth0_id`, {
+    found: Boolean(byAuth0Id),
+    keycloakUserId: byAuth0Id?.id || null,
+  });
+  return byAuth0Id;
 }
 
 /** Lazy migration window: first status check while needsPassword sets this on the KC user. */
@@ -65,8 +121,9 @@ function deadlineFields(deadlineIso) {
 
 router.get("/kc-password-status", verifyAuth0Jwt, async (req, res) => {
   try {
-    const kcUser = await findKeycloakUserForAuth0Request(req);
+    let kcUser = await findKeycloakUserForAuth0Request(req);
     if (!kcUser) {
+      console.log(`[tl:keycloak-api:${rid(req)}] kc_password_status_missing_user`);
       return res.json({
         needsPassword: true,
         keycloakUserId: null,
@@ -80,6 +137,13 @@ router.get("/kc-password-status", verifyAuth0Jwt, async (req, res) => {
     const hasPw = hasPasswordCredential(creds);
     const enrolled = isKcPasswordEnrolled(kcUser);
     const needsPassword = !hasPw && !enrolled;
+    console.log(`[tl:keycloak-api:${rid(req)}] kc_password_status_flags`, {
+      keycloakUserId: kcUser.id,
+      credentialsCount: Array.isArray(creds) ? creds.length : 0,
+      hasPasswordCredential: hasPw,
+      enrolledFlag: enrolled,
+      needsPassword,
+    });
     if (!needsPassword) {
       return res.json({
         needsPassword: false,
@@ -104,6 +168,10 @@ router.get("/kc-password-status", verifyAuth0Jwt, async (req, res) => {
         attributes: attrs,
       });
       kcUser = { ...kcUser, attributes: attrs };
+      console.log(`[tl:keycloak-api:${rid(req)}] kc_password_status_deadline_initialized`, {
+        keycloakUserId: kcUser.id,
+        deadlineIso,
+      });
     }
 
     const { daysRemaining, deadlinePassed } = deadlineFields(deadlineIso);
@@ -132,6 +200,7 @@ router.post("/kc-password", verifyAuth0Jwt, async (req, res) => {
   try {
     const kcUser = await findKeycloakUserForAuth0Request(req);
     if (!kcUser) {
+      console.log(`[tl:keycloak-api:${rid(req)}] kc_password_set_missing_user`);
       return res.status(404).json({ error: "keycloak_user_not_found" });
     }
     await resetUserPassword(kcUser.id, password, false);
@@ -141,9 +210,12 @@ router.post("/kc-password", verifyAuth0Jwt, async (req, res) => {
       ...kcUser,
       attributes: attrs,
     });
+    console.log(`[tl:keycloak-api:${rid(req)}] kc_password_set_success`, {
+      keycloakUserId: kcUser.id,
+    });
     return res.json({ ok: true, message: "keycloak_password_set" });
   } catch (e) {
-    console.error(e);
+    console.error(`[tl:keycloak-api:${rid(req)}] kc_password_set_failed`, e);
     return res.status(500).json({ error: e.message || "internal_error" });
   }
 });
