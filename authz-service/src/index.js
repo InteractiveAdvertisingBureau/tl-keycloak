@@ -229,6 +229,7 @@ async function main() {
       return res.status(400).json({ error: "issuer_subject_email_required" });
     }
     try {
+      const normalizedEmail = String(email).toLowerCase();
       const [existing] = await pool.query(
         "SELECT user_id FROM user_identities WHERE issuer = ? AND subject = ?",
         [issuer, subject]
@@ -236,10 +237,23 @@ async function main() {
       if (existing.length) {
         return res.json({ userId: existing[0].user_id, created: false });
       }
+      const [byEmail] = await pool.query(
+        "SELECT id FROM users WHERE email = ? LIMIT 1",
+        [normalizedEmail]
+      );
+      if (byEmail.length) {
+        const userId = byEmail[0].id;
+        await pool.query(
+          "INSERT IGNORE INTO user_identities (issuer, subject, user_id) VALUES (?, ?, ?)",
+          [issuer, subject, userId]
+        );
+        return res.json({ userId, created: false, linkedByEmail: true });
+      }
+
       const id = newInternalId();
       await pool.query("INSERT INTO users (id, email) VALUES (?, ?)", [
         id,
-        String(email).toLowerCase(),
+        normalizedEmail,
       ]);
       await pool.query(
         "INSERT INTO user_identities (issuer, subject, user_id) VALUES (?, ?, ?)",
